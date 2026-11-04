@@ -1454,9 +1454,22 @@ bool Session::MaybeSelectCandidate(commands::Command* command) {
   if (!context_->mutable_converter()->CandidateMoveToShortcut(shortcut)) {
     return false;
   }
-  // Commit the candidate selected by the shortcut immediately (MS-IME style)
-  // instead of only moving the focus and requiring Enter.
-  return Commit(command);
+
+  // Commit only up to the focused segment and keep the remaining reading in
+  // the composition, so the next segment can be selected right away. This
+  // mimics Chinese IMEs committing one word at a time.
+  PushUndoContext();
+  CommitHeadToFocusedSegmentsInternal(command->input().context());
+
+  if (context_->converter().IsActive()) {
+    SetSessionState(ImeContext::CONVERSION, context_.get());
+    context_->mutable_converter()->SetCandidateListVisible(true);
+  } else {
+    SetSessionState(ImeContext::PRECOMPOSITION, context_.get());
+  }
+  Output(command);
+  *context_->mutable_output() = command->output();
+  return true;
 }
 
 void Session::set_client_capability(commands::Capability capability) {
@@ -1527,7 +1540,18 @@ bool Session::InsertCharacter(commands::Command* command) {
   }
 
   const std::string composition = context_->composer().GetQueryForConversion();
-  bool should_commit = (context_->state() == ImeContext::CONVERSION);
+
+  // Live conversion: while the converter is active and the user keeps typing,
+  // extend the composition and re-convert instead of committing the current
+  // candidate. This mimics Chinese IMEs where the candidate list stays visible
+  // while you type.
+  const bool live_conversion =
+      context_->GetConfig().use_realtime_conversion() &&
+      context_->state() == ImeContext::CONVERSION &&
+      key.input_style() != commands::KeyEvent::DIRECT_INPUT;
+
+  bool should_commit = (context_->state() == ImeContext::CONVERSION) &&
+                       !live_conversion;
 
   if (context_->GetRequest().space_on_alphanumeric() ==
           commands::Request::SPACE_OR_CONVERT_COMMITTING_COMPOSITION &&
@@ -1560,6 +1584,9 @@ bool Session::InsertCharacter(commands::Command* command) {
   }
 
   SetSessionState(ImeContext::COMPOSITION, context_.get());
+  if (live_conversion) {
+    return Convert(command);
+  }
   if (CanStartAutoConversion(key)) {
     return Convert(command);
   }
@@ -2718,6 +2745,24 @@ void Session::Output(commands::Command* command) {
   OutputMode(command);
   context_->mutable_converter()->PopOutput(context_->composer(),
                                            command->mutable_output());
+
+  // While converting, keep showing the raw kana in the preedit and leave the
+  // converted words in the candidate list, similar to how Chinese IMEs show
+  // pinyin above the candidate list.
+  if (context_->GetConfig().use_realtime_conversion() &&
+      context_->state() == ImeContext::CONVERSION) {
+    const std::string kana = context_->composer().GetStringForPreedit();
+    if (!kana.empty()) {
+      const size_t kana_length = Util::CharsLen(kana);
+      commands::Preedit* preedit = command->mutable_output()->mutable_preedit();
+      preedit->Clear();
+      preedit->set_cursor(static_cast<uint32_t>(kana_length));
+      commands::Preedit::Segment* segment = preedit->add_segment();
+      segment->set_annotation(commands::Preedit::Segment::UNDERLINE);
+      segment->set_value(kana);
+      segment->set_value_length(static_cast<uint32_t>(kana_length));
+    }
+  }
 }
 
 void Session::OutputMode(commands::Command* command) const {
@@ -2796,7 +2841,8 @@ bool IsValidKey(const config::Config& config, const uint32_t key_code,
 
 bool Session::CanStartAutoConversion(
     const commands::KeyEvent& key_event) const {
-  if (!context_->GetConfig().use_auto_conversion()) {
+  if (!context_->GetConfig().use_auto_conversion() &&
+      !context_->GetConfig().use_realtime_conversion()) {
     return false;
   }
 
