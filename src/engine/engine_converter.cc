@@ -172,10 +172,9 @@ bool EngineConverter::Convert(const composer::Composer& composer,
 
   segment_index_ = 0;
   state_ = CONVERSION;
-  // If TalkBack is enabled, the candidate list should be always visible to
-  // propagate the candidate words to TalkBack. Otherwise, the candidate list
-  // is not visible on the first conversion.
-  candidate_list_visible_ = request_->is_a11y_talkback_enabled();
+  // Always show the candidate list on conversion so that the numbered
+  // candidates are visible immediately (MS-IME / Chinese IME style).
+  candidate_list_visible_ = true;
   UpdateCandidateList();
   InitializeSelectedCandidateIndices();
   return true;
