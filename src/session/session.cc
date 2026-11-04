@@ -1451,7 +1451,12 @@ bool Session::MaybeSelectCandidate(commands::Command* command) {
   // TODO(komatsu): Support non ASCII characters such as Unicode and
   // special keys.
   const char shortcut = static_cast<char>(normalized_keyevent.key_code());
-  return context_->mutable_converter()->CandidateMoveToShortcut(shortcut);
+  if (!context_->mutable_converter()->CandidateMoveToShortcut(shortcut)) {
+    return false;
+  }
+  // Commit the candidate selected by the shortcut immediately (MS-IME style)
+  // instead of only moving the focus and requiring Enter.
+  return Commit(command);
 }
 
 void Session::set_client_capability(commands::Capability capability) {
@@ -1515,8 +1520,9 @@ bool Session::InsertCharacter(commands::Command* command) {
   command->mutable_output()->set_consumed(true);
 
   // Handle shortcut keys selecting a candidate from a list.
+  // Note that MaybeSelectCandidate() outputs the result by itself because it
+  // commits the candidate immediately.
   if (MaybeSelectCandidate(command)) {
-    Output(command);
     return true;
   }
 
